@@ -41,33 +41,22 @@ def mask_from_image_path(image_path):
     img = load_image(image_path,as_bool=True,gray=True)
     return mask_from_image(img)
 
-def input():    
-    input_image_path = "images/single_square/original.pgm"
-    input_image = load_image(input_image_path,as_bool=False)
-
+def input(input_image,it_num):
     radius = 3.0
     Q = (np.pi*radius**2)/2.0
     rows,cols = input_image.shape
-    domain = ( (0,0), (cols-1,rows-1) )    
+    domain = ( (0,0), (cols-1,rows-1) )
 
-
-    trust_frg_mask_path = "images/single_square/trust_frg.pgm"
-    trust_frg_mask = mask_from_image_path(trust_frg_mask_path)
-
-    application_mask_path = "images/single_square/application.pgm"
-    application_mask = mask_from_image_path(application_mask_path)
-
-    optimization_mask_path = "images/single_square/optimization.pgm"
-    optimization_mask = mask_from_image_path(optimization_mask_path)
-
+    #regions = around_boundary(input_image,3,it_num%2==0)
+    regions = boundary_correction(input_image)
 
     return {"radius":radius,
             "Q":Q,
             "domain": domain,
-            "input_image":input_image,
-            "trust_frg_mask":trust_frg_mask,
-            "application_mask":application_mask,
-            "optimization_mask":optimization_mask}
+            "input_image":regions["input_image"],
+            "trust_frg_mask":regions["trust_frg_mask"],
+            "application_mask":regions["application_mask"],
+            "optimization_mask":regions["optimization_mask"]}
 
 
 class VariableMap:
@@ -77,7 +66,7 @@ class VariableMap:
 
         self.point_to_index = {}
         self.index_to_point = {}
-        
+
 
     def domain(self):
         return (self.initial_index,self.curr_index)
@@ -108,14 +97,14 @@ class ModelMap:
         return self.pairwise_map.curr_index
 
     def __getitem__(self,key):
-        if type(key[0]) is int: 
+        if type(key[0]) is int:
             return self.unary_map[key]      #point_to_index
         else:
             return self.pairwise_map[key]   #point_to_index
 
 
 def apply_ball_and_intersect(radius,application_mask,intersection_mask,aux_mat=None):
-    (h,w) = application_mask.shape    
+    (h,w) = application_mask.shape
 
     if aux_mat is None:
         aux_mat = MT.build_coordinates_matrix( h,w )
@@ -124,12 +113,12 @@ def apply_ball_and_intersect(radius,application_mask,intersection_mask,aux_mat=N
         disk_mask = MT.generate_disk_region_mask(x,y,radius,shape=(h,w))
         intersection = MT.intersect(intersection_mask,disk_mask)
 
-        for p in aux_mat[intersection]:            
+        for p in aux_mat[intersection]:
             p = (int(p[0]),int(p[1]))
             yield p
 
 def apply_ball_and_intersect_pair(radius,application_mask,intersection_mask,aux_mat=None):
-    (h,w) = application_mask.shape    
+    (h,w) = application_mask.shape
 
     if aux_mat is None:
         aux_mat = MT.build_coordinates_matrix( h,w )
@@ -138,26 +127,26 @@ def apply_ball_and_intersect_pair(radius,application_mask,intersection_mask,aux_
         disk_mask = MT.generate_disk_region_mask(x,y,radius,shape=(h,w))
         intersection = MT.intersect(intersection_mask,disk_mask)
 
-        for p1 in aux_mat[intersection]:            
+        for p1 in aux_mat[intersection]:
             p1 = (int(p1[0]),int(p1[1]))
 
-            for p2 in aux_mat[intersection]:            
-                p2 = (int(p2[0]),int(p2[1]))            
+            for p2 in aux_mat[intersection]:
+                p2 = (int(p2[0]),int(p2[1]))
 
-                yield (p1,p2)            
+                yield (p1,p2)
 
 
 def create_model_map(domain,radius,application_mask,opt_mask,aux_mat=None):
     mm = ModelMap()
 
     w,h = domain_dimensions(domain)
-    
+
 
     for p in apply_ball_and_intersect(radius,application_mask,opt_mask,aux_mat):
         if p in mm.unary_map.point_to_index:
             continue
         mm.unary_map.update(p)
-    
+
 
     num_unary_vars = mm.unary_map.curr_index
     mm.pairwise_map = VariableMap(mm.unary_map.curr_index)
@@ -192,7 +181,7 @@ def cvxopt(mm,unary_coefficients,pairwise_coefficients):
     #Linearization Constraints
     for i in range(pairwise_coefficients.size):
         pair_index = base_index + i
-        
+
         p1,p2 = mm.pairwise_map.index_to_point[pair_index]
 
         i1 = mm.unary_map.point_to_index[p1]
@@ -203,12 +192,12 @@ def cvxopt(mm,unary_coefficients,pairwise_coefficients):
         b[3*i] = 0
 
         A[3*i+1][pair_index] = 1
-        A[3*i+1][i2] = -1        
+        A[3*i+1][i2] = -1
         b[3*i+1] = 0
 
         A[3*i+2][pair_index] = -1
-        A[3*i+2][i1] = 1        
-        A[3*i+2][i2] = 1       
+        A[3*i+2][i1] = 1
+        A[3*i+2][i2] = 1
         b[3*i+2] = 1
 
     #Between Zero and One Constraints
@@ -218,7 +207,7 @@ def cvxopt(mm,unary_coefficients,pairwise_coefficients):
         b[base_index+2*i] = 0
 
         A[base_index+2*i+1][i] = 1
-        b[base_index+2*i+1] = 1        
+        b[base_index+2*i+1] = 1
 
     from cvxopt import matrix, solvers
 
@@ -228,7 +217,7 @@ def cvxopt(mm,unary_coefficients,pairwise_coefficients):
     b = matrix( b.tolist() )
     c = matrix( c.tolist() )
 
-    sol=solvers.lp(c,A,b)    
+    sol=solvers.lp(c,A,b)
 
     return sol['x']
 
@@ -243,16 +232,16 @@ class Model:
         self.radius = input_data["radius"]
         self.Q = input_data["Q"]
         self.domain = input_data["domain"]
-        
+
         self.application_mask = input_data["application_mask"]
         self.opt_mask = input_data["optimization_mask"]
         self.trust_frg_mask = input_data["trust_frg_mask"]
 
         w,h = domain_dimensions(self.domain)
         self.aux_mat = MT.build_coordinates_matrix( h,w )
-        
+
         self.mm = create_model_map(self.domain,self.radius,self.application_mask,self.opt_mask,self.aux_mat)
-        
+
         self.num_unary_vars = self.mm.unary_map.distinct_count()
         self.num_pairwise_vars = self.mm.pairwise_map.distinct_count()
 
@@ -265,21 +254,21 @@ class Model:
         for papp in self.aux_mat[self.application_mask]:
             (y,x) = papp
             disk_mask = MT.generate_disk_region_mask(x,y,self.radius,shape=self.application_mask.shape)
-            
+
             trust_intersection = MT.intersect(disk_mask,self.trust_frg_mask)
             opt_intersection = MT.intersect(disk_mask,self.opt_mask)
 
-            F = len(trust_intersection[trust_intersection])       
+            F = len(trust_intersection[trust_intersection])
             for p1 in self.aux_mat[opt_intersection]:
                 p1 = (int(p1[0]),int(p1[1]))
                 i1 = self.mm[p1]
 
                 self.unary_coefficients[ i1 ]  += -(self.Q-F-0.5)
-          
+
 
         for (p1,p2) in apply_ball_and_intersect_pair(self.radius,self.application_mask,self.opt_mask,self.aux_mat):
-            i1 = self.mm.unary_map.point_to_index[p1]            
-            i2 = self.mm.unary_map.point_to_index[p2]            
+            i1 = self.mm.unary_map.point_to_index[p1]
+            i2 = self.mm.unary_map.point_to_index[p2]
 
             if p1==p2:
                 continue
@@ -287,31 +276,65 @@ class Model:
             if i1 > i2:
                 continue
 
-            self.pairwise_coefficients[ self.mm[ (p1,p2) ] - self.num_unary_vars ]+=1 
+            self.pairwise_coefficients[ self.mm[ (p1,p2) ] - self.num_unary_vars ]+=1
 
 
+def around_boundary(start_image,levels=1,dilate=False):
+    if dilate:
+        original = MT.binary_dilation(start_image,MT.square(3))
+    else:
+        original = np.zeros(start_image.shape,dtype='bool')
+        original[start_image==255] = True
 
-def build_new_input_from_solution(model,solution):
+    (a,b),optimization_mask = MT.get_boundary_mask_D(original)
 
-    trust_frg_mask = model.trust_frg_mask
-    trust_frg_mask[solution==255] = True
+    ext_application_mask = MT.binary_dilation(original,MT.square(1+2*levels))
+    ext_application_mask = MT.minus(ext_application_mask,original)
 
-    print(len(solution==255))
+    temp = MT.binary_erosion(original,MT.square(1+2*(levels+1)))
+    in_application_mask = MT.minus(original,temp)
+    in_application_mask = MT.minus(in_application_mask,optimization_mask)
 
-    optimization_mask = MT.binary_dilation(trust_frg_mask,MT.square(3))    
-    ext_application_mask = MT.binary_dilation(optimization_mask,MT.square(3)) 
-
-    optimization_mask = MT.minus(ext_application_mask,trust_frg_mask)
-
-    (a,b),ext_application_mask = MT.get_boundary_mask( ext_application_mask )    
-
-    optimization_mask = MT.minus(optimization_mask,ext_application_mask)
-
-    (a,b),in_application_mask = MT.get_boundary_mask( trust_frg_mask )             
+    trust_frg_mask = MT.minus(original,optimization_mask)
 
     application_mask = np.zeros( ext_application_mask.shape,dtype='bool' )
     application_mask[ext_application_mask] = True
     application_mask[in_application_mask] = True
+
+    return {"input_image":original,
+            "trust_frg_mask":trust_frg_mask,
+            "application_mask":application_mask,
+            "optimization_mask":optimization_mask}
+
+
+def boundary_correction(input_image):
+    original = np.zeros(input_image.shape,dtype='bool')
+    if(input_image.dtype!='bool'):
+        original[input_image==255] = True
+    else:
+        original = input_image.copy()
+
+    (a,b),optimization_mask = MT.get_boundary_mask_D(original)
+    application_mask = optimization_mask
+
+    trust_frg_mask = MT.binary_erosion(original,MT.square(3))
+
+    return {"input_image":original,
+            "trust_frg_mask":trust_frg_mask,
+            "application_mask":application_mask,
+            "optimization_mask":optimization_mask}
+
+
+
+def build_new_input_from_solution(model,solution,it_num):
+    input_image = model.trust_frg_mask.copy()
+    input_image[solution==255] = True
+
+    new_input = input(input_image,it_num)
+
+    trust_frg_mask = new_input['trust_frg_mask']
+    application_mask = new_input['application_mask']
+    optimization_mask = new_input['optimization_mask']
 
 
     plt.clf()
@@ -327,32 +350,28 @@ def build_new_input_from_solution(model,solution):
     base_img = np.zeros( trust_frg_mask.shape )
     plot_mask(plt,trust_frg_mask,255,base_img)
     plot_mask(plt,application_mask,128,base_img)
-    
-    plt.imshow(base_img,cmap="gray")    
+
+    plt.imshow(base_img,cmap="gray")
     plt.show()
 
-    
-    return {"radius":model.radius,
-            "Q":model.Q,
-            "domain": model.domain,
-            "input_image":solution,
-            "trust_frg_mask":trust_frg_mask,
-            "application_mask":application_mask,
-            "optimization_mask":optimization_mask}  
+    return new_input
 
-def solve(model):
+
+
+
+def solve(model,it_num):
     sol_x = cvxopt( model.mm,
                     model.unary_coefficients,
                     model.pairwise_coefficients)
 
     (w,h) = domain_dimensions(model.domain)
-    
+
     image_solution = np.zeros( (h,w),dtype="uint8" )
-    for i in range(model.num_unary_vars):        
+    for i in range(model.num_unary_vars):
         y,x = model.mm.unary_map.index_to_point[i]
-        if sol_x[i] >= 0.5:                                    
-            image_solution[y][x] = 255            
-        elif sol_x[i] <= (0.001):            
+        if sol_x[i] >= 0.9:
+            image_solution[y][x] = 255
+        elif sol_x[i] <= (0.001):
             image_solution[y][x] = 0
         else:
             image_solution[y][x] = 64  #Unlabeled
@@ -371,26 +390,29 @@ def solve(model):
     final_solution = inverted_solution
 
     plot_mask(plt,model.trust_frg_mask,128,final_solution)
-    plt.show()        
+    plt.show()
 
     solution = np.zeros( final_solution.shape,dtype='uint8')
     solution[final_solution>64] = 255
 
-    return build_new_input_from_solution(model,solution)
+    return build_new_input_from_solution(model,solution,it_num)
 
-def main():
-    new_input = input()
+def flow(start_image):
+    new_input = input(start_image,0)
+
     for i in range(10):
         print( len( new_input["trust_frg_mask"][ new_input["trust_frg_mask"] ] ) )
-        model = Model( new_input )            
+        model = Model( new_input )
         model.__coefficients__()
         print(""" ***Model Map completed***\nUnary Terms: %d\nPairwise Terms: %d\nTotal: %d\n\n""" % (   model.num_unary_vars,
-                                                                                                         model.num_pairwise_vars,
-                                                                                                         model.num_vars) )
-        new_input = solve(model)
+        model.num_pairwise_vars,
+        model.num_vars) )
+        new_input = solve(model,i+1)
 
 
-
+def main():
+    input_image = load_image("images/square.pgm",as_bool=False)
+    flow(input_image)
 
 
 if __name__=='__main__':
